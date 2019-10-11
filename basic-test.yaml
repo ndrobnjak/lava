@@ -1,0 +1,9 @@
+metadata:
+    format: Lava-Test Test Definition 1.0
+    name: lava-basic-test
+    description: "Try to run own tests"
+
+run:
+    steps:
+        - lava-test-case lava-basic-test-pwd --shell pwd
+        - lava-test-case lava-basic-test-uname --shell uname -a
