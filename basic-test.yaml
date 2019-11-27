@@ -5,11 +5,8 @@ metadata:
 
 run:
     steps:
-<<<<<<< HEAD
         - lava-test-case lava-ping ping -c4 $(lava-target-ip)
         - lava-test-case lava-pwd pwd
-=======
         - pwd
->>>>>>> 3b01d11760a5062cdfb4620cbfe09a910f09aead
         - lava-test-case lava-basic-test-pwd --shell pwd
         - lava-test-case lava-basic-test-uname --shell uname -a
