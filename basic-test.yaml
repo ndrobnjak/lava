@@ -5,7 +5,4 @@ metadata:
 
 run:
     steps:
-        - lava-test-case lava-pwd pwd
-        - pwd
-        - lava-test-case lava-basic-test-pwd --shell pwd
-        - lava-test-case lava-basic-test-uname --shell uname -a
+        - lava-test-case lava-ip --shell ip addr show
