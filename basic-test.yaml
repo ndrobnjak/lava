@@ -8,4 +8,5 @@ run:
         - lava-test-case lava-ip --shell ip addr show
         - "ping -c4 10.0.2.15"
         - ping -c4 10.0.2.15
-        - cat /etc/test 
+        - cat /etc/test
+    from: inline
