@@ -2,11 +2,17 @@ metadata:
     format: "Manual Test Definition 1.0"
     name: lava-basic-test
     description: "Try to run own tests"
-
+    os:
+        - debian
+    scope:
+        - functional
+install:
+        deps:
+            - openssh-server
+            - ntpdate
 run:
     steps:
         - lava-test-case lava-ip --shell ip addr show
         - "ping -c4 10.0.2.15"
         - ping -c4 10.0.2.15
         - cat /etc/test
-    from: inline
