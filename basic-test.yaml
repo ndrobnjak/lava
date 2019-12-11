@@ -6,10 +6,6 @@ metadata:
         - debian
     scope:
         - functional
-install:
-        deps:
-            - openssh-server
-            - ntpdate
 run:
     steps:
         - lava-test-case lava-ip --shell ip addr show
