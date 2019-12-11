@@ -1,3 +1,15 @@
+def lava_result_convert(pytest_outcome):
+    """ Convert the pytest outcome to the string expected by LAVA.
+    """
+    if pytest_outcome is 'passed':
+        return 'pass'
+    elif pytest_outcome is 'skipped':
+        return 'pass'
+    elif pytest_outcome is 'xfailed':
+        return 'pass'
+    else:
+        return 'fail'
+
 def pytest_report_teststatus(report):
     """ Insert strings that LAVA expects to captur test results.
     """
