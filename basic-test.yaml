@@ -6,9 +6,11 @@ metadata:
         - debian
     scope:
         - functional
+    devices:
+        - x86
 run:
     steps:
         - lava-test-case lava-ip --shell ip addr show
         - "ping -c4 10.0.2.15"
         - ping -c4 10.0.2.15
-        - cat /etc/test
+        - pytest
