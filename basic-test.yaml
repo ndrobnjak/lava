@@ -14,3 +14,4 @@ run:
         - "ping -c4 10.0.2.15"
         - ping -c4 10.0.2.15
         - $(chmod +x ./conftest.py)
+        - $(./conftest.py)
