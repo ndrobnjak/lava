@@ -14,5 +14,7 @@ run:
         - "ping -c4 10.0.2.15"
         - ping -c4 10.0.2.15
         - $(./myscript.sh)
+        - exit && ls
+        - ls
         #- $(chmod +x ./conftest.py)
         #- $(./conftest.py)
