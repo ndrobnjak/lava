@@ -1,0 +1,348 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+# vim: set ts=4
+
+# Copyright 2018 Rémi Duraffort
+# This file is part of lava-play.
+#
+# lava-play is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# lava-play is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with lava-play.  If not, see <http://www.gnu.org/licenses/>
+
+import argparse
+import contextlib
+import docker
+import logging
+import pathlib
+import requests
+import signal
+import sys
+import time
+import xmlrpc.client
+
+
+###########
+# Constants
+###########
+DISPATCHER_CMD=["--master", "tcp://lava-play-server:5556", "--socket-addr", "tcp://lava-play-server:5555"]
+DOCKER_BASE="lava-play"
+DOCKER_NETWORK_NAME="lava-play-net"
+DOCKER_DISPATCHER_DEVICES=["/dev/kvm:/dev/kvm"]
+DOCKER_DISPATCHER_VOLUMES={
+                           "/dev/kvm": {"bind": "/dev/kvm", "mode": "rw"},
+                           "/boot": {"bind": "/boot", "mode": "ro"},
+                           "/lib/modules": {"bind": "/lib/modules", "mode": "ro"}
+                          }
+LAVA_QEMU_DICT="{% extends 'qemu.jinja2' %}"
+LAVA_QEMU_JOB = """
+device_type: qemu
+
+job_name: qemu-amd64-standard-jessie
+
+timeouts:
+  job:
+    minutes: 6
+  action:
+    minutes: 2
+priority: medium
+visibility: public
+
+metadata:
+  source: https://git.linaro.org/lava/lava-lab.git
+  path: shared/health-checks/qemu.yaml
+
+context:
+  arch: amd64
+
+actions:
+- deploy:
+    timeout:
+      minutes: 3
+    to: tmpfs
+    images:
+        rootfs:
+          image_arg: -drive format=raw,file={rootfs}
+          url: http://images.validation.linaro.org/kvm/standard/large-stable-6.img.gz
+          compression: gz
+    os: debian
+    root_partition: 1
+
+- boot:
+    method: qemu
+    timeout:
+      minutes: 2
+    media: tmpfs
+    prompts:
+    - "root@debian:"
+    auto_login: 
+      login_prompt: "login:"
+      username: root
+
+- test:
+    timeout:
+      minutes: 5
+    definitions:
+    - repository:
+        metadata:
+          format: Lava-Test Test Definition 1.0
+          name: smoke-tests-basic
+          description: "Basic system test command for Linaro Ubuntu images"
+        run:
+          steps:
+          - printenv
+      from: inline
+      name: env-dut-inline
+      path: inline/env-dut.yaml
+    - repository: http://git.linaro.org/lava-team/lava-functional-tests.git
+      from: git
+      path: lava-test-shell/smoke-tests-basic.yaml
+      name: smoke-tests
+"""
+
+LOG = logging.getLogger("meta-lava")
+LOG_FORMAT = "%(asctime)-15s %(levelname)7s %(message)s"
+XMLRPC_RETRIES=5
+XMLRPC_SLEEP=2
+XMLRPC_PORT=10000
+XMLRPC_URL="http://admin:admin@localhost:%d/RPC2" % XMLRPC_PORT
+
+
+#########
+# Helpers
+#########
+class RequestsTransport(xmlrpc.client.Transport):
+
+    def request(self, host, handler, data, verbose=False):
+        headers = {"User-Agent": "meta-lava",
+                   "Content-Type": "text/xml",
+                   "Accept-Encoding": "gzip"}
+        url = "http://%s%s" % (host, handler)
+        try:
+            response = None
+            response = requests.post(url, data=data, headers=headers,
+                                     timeout=20)
+            response.raise_for_status()
+            return self.parse_response(response)
+        except requests.RequestException as e:
+            if response is None:
+                raise xmlrpc.client.ProtocolError(url, 500, str(e), "")
+            else:
+                raise xmlrpc.client.ProtocolError(url, response.status_code,
+                                                  str(e), response.headers)
+
+    def parse_response(self, resp):
+        """
+        Parse the xmlrpc response.
+        """
+        p, u = self.getparser()
+        p.feed(resp.text)
+        p.close()
+        return u.close()
+
+
+def docker_build(client, name, nocache):
+    LOG.info("[SETUP] -> %s", name)
+    path = pathlib.Path("images") / name
+    image, _ = client.images.build(path=str(path), tag=DOCKER_BASE + "/" + name,
+                                nocache=nocache, rm=True)
+
+    LOG.debug("[SETUP] -> id=%s", image.id)
+    return image.id
+
+
+def docker_network(client, net):
+    LOG.info("[SETUP] -> %s", net)
+    network = client.networks.create(net, driver="bridge")
+    LOG.debug("[SETUP] --> id=%s", network.id)
+    return network.id
+
+
+def docker_run(client, name, ports=None, command=None, devices=None, volumes=None):
+    if ports is None:
+        ports = {}
+    if devices is None:
+        devices = []
+    if volumes is None:
+        volumes = {}
+    LOG.info("[RUN] -> %s", name)
+    try:
+        image_name = DOCKER_BASE + "/lava-" + name
+        docker_name = DOCKER_BASE + "-" + name
+        hostname = "lava-" + name
+        container = client.containers.run(image_name, detach=True,
+                                          hostname=hostname, name=docker_name,
+                                          ports=ports, devices=devices, volumes=volumes,
+                                          network=DOCKER_NETWORK_NAME, auto_remove=True,
+                                          command=command)
+        LOG.debug("[RUN] --> id=%s", container.id)
+        return container.id
+    except docker.errors.APIError as exc:
+        LOG.error("[RUN] --> Unable to run")
+        LOG.exception(exc)
+        return None
+
+
+def setup_logging(options):
+    """
+    Setup the log handler and the log level
+    """
+    if options.log_file == "-":
+        handler = logging.StreamHandler(sys.stdout)
+    else:
+        handler = logging.handlers.WatchedFileHandler(options.log_file)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    LOG.addHandler(handler)
+    if options.log_level == "DEBUG":
+        LOG.setLevel(logging.DEBUG)
+    elif options.log_level == "INFO":
+        LOG.setLevel(logging.INFO)
+    elif options.log_level == "WARNING":
+        LOG.setLevel(logging.WARNING)
+    else:
+        LOG.setLevel(logging.ERROR)
+
+
+def wait_dispatcher(proxy):
+    for i in range(1, XMLRPC_RETRIES + 1):
+        state = "Offline"
+        with contextlib.suppress(xmlrpc.client.Fault):
+            state = proxy.scheduler.workers.show("lava-dispatcher")["state"]
+        if state == "Online":
+            return True
+        if i != XMLRPC_RETRIES:
+            LOG.debug("[RUN] --> not ready, retrying in %ds", XMLRPC_SLEEP)
+            time.sleep(XMLRPC_SLEEP)
+    LOG.error("[RUN] --> not ready, leaving")
+    return False
+
+
+def wait_xmlrpc():
+    LOG.debug("[RUN] -> url=%s", XMLRPC_URL)
+    proxy = xmlrpc.client.ServerProxy(XMLRPC_URL, allow_none=True, transport=RequestsTransport())
+
+    for i in range(1, XMLRPC_RETRIES + 1):
+        try:
+            version = proxy.system.version()
+            LOG.debug("[RUN] --> %s", version)
+            break
+        except xmlrpc.client.Error:
+            if i != XMLRPC_RETRIES:
+                LOG.debug("[RUN] --> unable to connect, retrying in %ds", XMLRPC_SLEEP)
+                time.sleep(XMLRPC_SLEEP)
+            else:
+                LOG.error("[RUN] --> unable to connect, leaving")
+                return None
+
+    return proxy
+
+
+#############
+# Entry point
+#############
+def main():
+    # Setup the parser
+    parser = argparse.ArgumentParser()
+    loggrp = parser.add_argument_group("logging")
+    loggrp.add_argument("--log-level", type=str, default="DEBUG",
+                        choices=["DEBUG", "ERROR", "INFO", "WARN"],
+                        help="Log level, default to DEBUG")
+    loggrp.add_argument('--log-file', type=str, default="-",
+                        help="Log file, default to stdout")
+
+    parser.add_argument("--no-cache", dest="cache", default=True, action="store_false",
+                        help="Do not use docker caching")
+
+    # Parse the command line
+    options = parser.parse_args()
+
+    # Setup logger
+    setup_logging(options)
+
+    containers = {}
+    network = None
+    containers_name = ('lava-play-server', 'lava-play-dispatcher')
+    try:
+        LOG.info("[SETUP] Connecting to docker")
+        client = docker.from_env()
+
+        LOG.info("[SETUP] Building images")
+        docker_build(client, "lava-server", not options.cache)
+        docker_build(client, "lava-dispatcher", not options.cache)
+
+        LOG.info("[SETUP] Creating network")
+        network = docker_network(client, DOCKER_NETWORK_NAME)
+
+        LOG.info("[RUN] Starting containers")
+        docker_run(client, "server", ports={"80/tcp": ("localhost", XMLRPC_PORT)})
+        docker_run(client, "dispatcher", command=DISPATCHER_CMD,
+                                                   devices=DOCKER_DISPATCHER_DEVICES,
+                                                   volumes=DOCKER_DISPATCHER_VOLUMES)
+
+        LOG.info("[RUN] Waiting for:")
+        LOG.info("[RUN] -> lava-server")
+        proxy = wait_xmlrpc()
+        if proxy is None:
+            return 1
+        LOG.info("[RUN] -> lava-dispatcher")
+        if not wait_dispatcher(proxy):
+            return 1
+
+        LOG.info("[RUN] lava-play ready at http://localhost:%d/", XMLRPC_PORT)
+        LOG.info("[RUN] -> username: admin")
+        LOG.info("[RUN] -> password: admin")
+
+        LOG.info("[RUN] Adding 'qemu' device-type")
+        proxy.scheduler.device_types.add("qemu", None, True, False, 24, "hours")
+        LOG.info("[RUN] Adding 'qemu-01' device")
+        proxy.scheduler.devices.add("qemu-01", "qemu", "lava-dispatcher", "admin", None, True, "GOOD", None)
+        proxy.scheduler.devices.set_dictionary("qemu-01", LAVA_QEMU_DICT)
+        LOG.info("[RUN] Submitting a job")
+        proxy.scheduler.jobs.submit(LAVA_QEMU_JOB)
+        LOG.info("[RUN] -> http://localhost:%d/scheduler/job/1", XMLRPC_PORT)
+
+        LOG.info("[RUN] Waiting for a signal")
+        with contextlib.suppress(KeyboardInterrupt):
+            signal.pause()
+    except KeyboardInterrupt:
+        LOG.info("[EXIT] Received Ctrl+C, leaving")
+        return 1
+    except Exception as exc:
+        LOG.error("[EXIT] %s", exc)
+        LOG.exception(exc)
+        return 1
+    finally:
+        LOG.info("[EXIT] Removing containers:")
+        for container_name in containers_name:
+            try:
+                container_obj = client.containers.get(str(container_name))
+                LOG.info("[EXIT] -> %s (%s)", container_name, container_obj.id)
+                try:
+                    container_obj.stop()
+                except docker.errors.APIError as exc:
+                    LOG.error("[EXIT] --> error: %s", str(exc))
+            except docker.errors.NotFound:
+                continue
+        if network is not None:
+            LOG.info("[EXIT] Removing networks:")
+            LOG.info("[EXIT] -> %s (%s)", DOCKER_NETWORK_NAME, network)
+            try:
+                client.networks.get(network).remove()
+            except docker.errors.APIError as exc:
+                LOG.error("[EXIT] --> error: %s", str(exc))
+    return 0
+
+
+if __name__ == "__main__":
+    if sys.version < "3":
+        sys.stderr.write("Python3 required\n")
+        sys.exit(1)
+    sys.exit(main())
