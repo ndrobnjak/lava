@@ -1,0 +1,77 @@
+device_type: beaglebone-black
+job_name: test relay
+
+timeouts:
+  job:
+    minutes: 6
+  action:
+    minutes: 2
+priority: medium
+visibility: public
+
+actions:
+- deploy:
+    timeout:
+        minutes: 4
+    to: tftp
+    kernel:
+      url: http://example.com/vmlinuz-4.9.0-4-armmp
+      type: zimage
+
+- boot:
+    method: u-boot
+    commands: ramdisk
+    timeout:
+      minutes: 2
+    power_on:
+      seconds: 10
+    prompts:
+    - "root@lava.ccp.siemens.com:"
+    auto_login:
+      login_prompt: "login:"
+      username: root
+
+- test:
+    timeout:
+      minutes: 5
+    definitions:
+    - repository: https://github.com/ndrobnjak/lava
+      from: git
+      path: basic-test.yaml
+      name: lava-basic-test
+#so funktioniert er ohne 
+
+device_type: beaglebone-black
+job_name: test relay
+
+timeouts:
+  job:
+    minutes: 6
+  action:
+    minutes: 2
+priority: medium
+visibility: public
+
+actions:
+- deploy:
+    timeout:
+        minutes: 4
+    to: recovery
+    images:
+      boot:
+        url: http://example.com/vmlinuz-4.9.0-4-armmp
+        compression: xz
+- boot:
+    method: recovery
+    commands: recovery
+    timeout:
+      minutes: 2
+
+- test:
+    timeout:
+      minutes: 5
+    definitions:
+    - repository: https://github.com/ndrobnjak/lava
+      from: git
+      path: basic-test.yaml
+      name: lava-basic-test
