@@ -75,3 +75,16 @@ actions:
       from: git
       path: basic-test.yaml
       name: lava-basic-test
+
+      
+      
+      
+{% extends 'beaglebone-black.jinja2' %}
+
+{% set console_device = console_device|default('ttyUSB0') %}
+{% set hard_reset_command = 'YModule MXPWRRLY-12712D reboot 5' %}
+{% set power_off_command = 'YRelay all set_output OFF' %}
+{% set power_on_command = 'YRelay all set_output ON' %}
+{% set recovery_mode_command = [
+'YRelay all set_output OFF',
+'YRelay all set_output ON' %}
