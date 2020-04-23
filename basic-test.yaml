@@ -11,10 +11,11 @@ metadata:
 run:
     steps:
         - lava-test-case lava-ip --shell ip addr show
-        - "ping -c4 10.0.2.15"
-        - ping -c4 10.0.2.15
-        - $(./myscript.sh)
-        - exit && ls
+        - lava-test-case lava-ip --shell pwd
+        #- "ping -c4 10.0.2.15"
+        #- ping -c4 10.0.2.15
+        #- $(./myscript.sh)
+        #- exit && ls
         - ls
         #- $(chmod +x ./conftest.py)
         #- $(./conftest.py)
